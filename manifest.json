@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-dropbox-sync",
+	"name": "Dropbox Sync",
+	"version": "0.1.0",
+	"minAppVersion": "0.15.0",
+	"description": "This is Dropbox Sync plugin for Obsidian (https://obsidian.md)",
+	"author": "Sergei Reimerov",
+	"authorUrl": "https://github.com/sreym/obsidian-dropbox-sync",
+	"isDesktopOnly": false
+}
