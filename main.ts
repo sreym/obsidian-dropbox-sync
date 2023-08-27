@@ -1,4 +1,4 @@
-import {App, Events, Plugin, PluginSettingTab, Setting} from 'obsidian';
+import {App, Events, Plugin, PluginSettingTab, Setting, TAbstractFile, TFolder} from 'obsidian';
 
 import {Dropbox, DropboxAuth, DropboxResponse} from 'dropbox';
 
@@ -16,6 +16,48 @@ const DEFAULT_SETTINGS: DropboxSyncSettings = {
 
 const CLIENT_ID = 'gcd92pv67w5evql';
 const OAUTH_CODE = 'dropbox-sync/oauth-code';
+
+class VaultListener extends Events {
+	app: App;
+	constructor(app: App) {
+		super();
+		this.app = app;
+	}
+	start() {
+		this.app.vault.on('modify', this.onModify = this.onModify.bind(this));
+		this.app.vault.on('create', this.onCreate = this.onCreate.bind(this));
+		this.app.vault.on('delete', this.onDelete = this.onDelete.bind(this));
+		this.app.vault.on('rename', this.onRename = this.onRename.bind(this));
+
+	}
+
+	stop() {
+		this.app.vault.off('modify', this.onModify);
+		this.app.vault.off('create', this.onCreate);
+		this.app.vault.off('delete', this.onDelete);
+		this.app.vault.off('rename', this.onRename);
+	}
+
+	onModify(file: TAbstractFile) {
+		this.trigger('folder', file);
+	}
+
+	onCreate(file: TAbstractFile) {
+		if (file instanceof TFolder)
+			this.trigger('folder', file);
+		else
+			this.trigger('file', file);
+	}
+
+	onDelete(file: TAbstractFile) {
+		this.trigger('delete', file.path);
+	}
+
+	onRename(file: TAbstractFile, oldPath: string) {
+		this.trigger('delete', oldPath);
+		this.onCreate(file);
+	}
+}
 
 class DropboxListener extends Events {
 	path: string;
@@ -93,6 +135,7 @@ export default class DropboxSyncPlugin extends Plugin {
 	codeVerifier: string = '';
 	settings: DropboxSyncSettings;
 	dropboxListener: DropboxListener;
+	vaultListener: VaultListener;
 
 	async getDropboxAuth(): Promise<DropboxAuth> {
 		let res = new DropboxAuth({
@@ -164,10 +207,6 @@ export default class DropboxSyncPlugin extends Plugin {
 	async startServices() {
 		if (!this.isSignedIn())
 			return;
-		this.app.vault.on('modify',
-			this.vaultFileModify = this.vaultFileModify.bind(this));
-		this.app.vault.on('delete', this.vaultChange);
-		this.app.vault.on('rename', this.vaultChange);
 		this.dropboxListener = new DropboxListener(
 			await this.getDropboxAuth(), this.settings.vaultPath);
 		this.dropboxListener.start();
@@ -192,24 +231,22 @@ export default class DropboxSyncPlugin extends Plugin {
 			let path = this.getVaultPath(entry);
 			await this.createVaultFolder(path);
 		});
-	}
-
-	vaultFileModify(file: any) {
-		console.log(`Filesystem modify detected: ${file.path}`);
-		this.copyFileToDropbox(file.path);
-	}
-
-	vaultChange(file: any) {
-		console.log(`Filesystem change detected: ${file.path}`);
+		this.vaultListener = new VaultListener(this.app);
+		this.vaultListener.start();
+		this.vaultListener.on('file', async (file) => {
+			await this.copyFileToDropbox(file.path);
+		});
+		this.vaultListener.on('folder', async (folder) => {
+			let dbx = new Dropbox({auth: await this.getDropboxAuth()});
+			await dbx.filesCreateFolderV2({path: `${this.settings.vaultPath}/${folder.path}`});
+		});
 	}
 
 	stopServices() {
 		if (!this.isSignedIn())
 			return;
-		this.app.vault.off('modify', this.vaultFileModify);
-		this.app.vault.off('delete', this.vaultChange);
-		this.app.vault.off('rename', this.vaultChange);
 		this.dropboxListener.stop();
+		this.vaultListener.stop();
 	}
 
 	async onload() {
