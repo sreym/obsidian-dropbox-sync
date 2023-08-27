@@ -75,6 +75,20 @@ class DropboxListener extends Events {
 	}
 }
 
+const BLOCK_SIZE = 4 * 1024 * 1024;
+async function contentHash(data: ArrayBuffer) {
+    let chunksNum = Math.ceil(data.byteLength / BLOCK_SIZE);
+    let result = new Uint8Array(32 * chunksNum);
+    for (let i = 0; i < chunksNum; i += 1) {
+        let chunk = data.slice(i * BLOCK_SIZE, (i+1) * BLOCK_SIZE);
+        let chunkHash = await crypto.subtle.digest('SHA-256', chunk);
+        result.set(new Uint8Array(chunkHash), i * 32);
+    }
+    let resultHash = await crypto.subtle.digest('SHA-256', result);
+    return [...new Uint8Array(resultHash)]
+        .map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
 export default class DropboxSyncPlugin extends Plugin {
 	codeVerifier: string = '';
 	settings: DropboxSyncSettings;
@@ -113,6 +127,13 @@ export default class DropboxSyncPlugin extends Plugin {
 		await this.createVaultFolder(dir);
 		let dbx = new Dropbox({auth: await this.getDropboxAuth()});
 		let {result} : any = await dbx.filesDownload({path: entry.path_display});
+		if (this.app.vault.getAbstractFileByPath(path))
+		{
+			let dbxHash = result.content_hash;
+			let vaultHash = await contentHash(await this.app.vault.adapter.readBinary(path));
+			if (dbxHash === vaultHash)
+				return;
+		}
 		await this.app.vault.adapter.writeBinary(path,
 			Buffer.from(await result.fileBlob.arrayBuffer()));
 	}
