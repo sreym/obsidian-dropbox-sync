@@ -118,6 +118,8 @@ export default class DropboxSyncPlugin extends Plugin {
 	}
 
 	async createVaultFolder(path: string) {
+		if (!path)
+			return;		
 		if (!this.app.vault.getAbstractFileByPath(path))
 			await this.app.vault.createFolder(path);		
 	}
@@ -138,12 +140,34 @@ export default class DropboxSyncPlugin extends Plugin {
 			Buffer.from(await result.fileBlob.arrayBuffer()));
 	}
 
+	async copyFileToDropbox(path: string) {
+		let dbxPath = `${this.settings.vaultPath}/${path}`;
+		let dbx = new Dropbox({auth: await this.getDropboxAuth()});
+		try {
+			let dbxHash = (await dbx.filesGetMetadata({path: dbxPath})).result.content_hash;
+			let vaultHash = await contentHash(await this.app.vault.adapter.readBinary(path));
+			if (dbxHash === vaultHash)
+				return;
+			console.log(vaultHash, dbxHash);
+		} catch(e) {
+			if (!e.error.error.path['.tag'])
+				throw e;
+			console.log('file does not exist on dropbox');
+		}
+		await dbx.filesUpload({
+			path: dbxPath,
+			contents: await this.app.vault.adapter.readBinary(path),
+			mode: {'.tag': 'overwrite'},
+		});
+	}
+
 	async startServices() {
 		if (!this.isSignedIn())
 			return;
-		this.app.vault.on('modify', this.logChange);
-		this.app.vault.on('delete', this.logChange);
-		this.app.vault.on('rename', this.logChange);
+		this.app.vault.on('modify',
+			this.vaultFileModify = this.vaultFileModify.bind(this));
+		this.app.vault.on('delete', this.vaultChange);
+		this.app.vault.on('rename', this.vaultChange);
 		this.dropboxListener = new DropboxListener(
 			await this.getDropboxAuth(), this.settings.vaultPath);
 		this.dropboxListener.start();
@@ -170,12 +194,21 @@ export default class DropboxSyncPlugin extends Plugin {
 		});
 	}
 
+	vaultFileModify(file: any) {
+		console.log(`Filesystem modify detected: ${file.path}`);
+		this.copyFileToDropbox(file.path);
+	}
+
+	vaultChange(file: any) {
+		console.log(`Filesystem change detected: ${file.path}`);
+	}
+
 	stopServices() {
 		if (!this.isSignedIn())
 			return;
-		this.app.vault.off('modify', this.logChange);
-		this.app.vault.off('delete', this.logChange);
-		this.app.vault.off('rename', this.logChange);
+		this.app.vault.off('modify', this.vaultFileModify);
+		this.app.vault.off('delete', this.vaultChange);
+		this.app.vault.off('rename', this.vaultChange);
 		this.dropboxListener.stop();
 	}
 
@@ -199,10 +232,6 @@ export default class DropboxSyncPlugin extends Plugin {
 
 	onunload() {
 		this.stopServices();
-	}
-
-	logChange(file: any) {
-		console.log(`Filesystem change detected: ${file.path}`);
 	}
 
 	async loadSettings() {
