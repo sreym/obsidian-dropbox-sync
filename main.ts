@@ -28,7 +28,6 @@ class VaultListener extends Events {
 		this.app.vault.on('create', this.onCreate = this.onCreate.bind(this));
 		this.app.vault.on('delete', this.onDelete = this.onDelete.bind(this));
 		this.app.vault.on('rename', this.onRename = this.onRename.bind(this));
-
 	}
 
 	stop() {
@@ -50,11 +49,11 @@ class VaultListener extends Events {
 	}
 
 	onDelete(file: TAbstractFile) {
-		this.trigger('delete', file.path);
+		this.trigger('deleted', file.path);
 	}
 
 	onRename(file: TAbstractFile, oldPath: string) {
-		this.trigger('delete', oldPath);
+		this.trigger('deleted', oldPath);
 		this.onCreate(file);
 	}
 }
@@ -231,6 +230,12 @@ export default class DropboxSyncPlugin extends Plugin {
 			let path = this.getVaultPath(entry);
 			await this.createVaultFolder(path);
 		});
+		this.dropboxListener.on('deleted', async (entry) => {
+			let path = this.getVaultPath(entry);
+			let afile = this.app.vault.getAbstractFileByPath(path);
+			if (afile)
+				await this.app.vault.delete(afile);
+		});
 		this.vaultListener = new VaultListener(this.app);
 		this.vaultListener.start();
 		this.vaultListener.on('file', async (file) => {
@@ -239,6 +244,10 @@ export default class DropboxSyncPlugin extends Plugin {
 		this.vaultListener.on('folder', async (folder) => {
 			let dbx = new Dropbox({auth: await this.getDropboxAuth()});
 			await dbx.filesCreateFolderV2({path: `${this.settings.vaultPath}/${folder.path}`});
+		});
+		this.vaultListener.on('deleted', async (path) => {
+			let dbx = new Dropbox({auth: await this.getDropboxAuth()});
+			await dbx.filesDeleteV2({path: `${this.settings.vaultPath}/${path}`});
 		});
 	}
 
