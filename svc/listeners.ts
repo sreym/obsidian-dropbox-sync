@@ -98,6 +98,7 @@ export class DropboxListener extends Events {
 					this.trigger(entry['.tag'], entry);
 				}
 			}
+			this.trigger('synced');
 			cursor = lastCursor;
 		}
 	}

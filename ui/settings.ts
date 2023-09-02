@@ -6,7 +6,8 @@ export interface DropboxSyncSettingsI {
 	vaultPath: string,
 	refreshToken?: string;
 	accessToken?: string;
-	tokenExpiresAt: number,
+	tokenExpiresAt: number;
+    lastSync?: number;
 }
 
 export const DEFAULT_SETTINGS: DropboxSyncSettingsI = {

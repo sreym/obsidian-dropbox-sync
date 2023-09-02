@@ -1,7 +1,7 @@
 import {Dropbox, DropboxAuth} from "dropbox";
 import {DropboxListener, VaultListener} from "./listeners";
 import {App, TAbstractFile} from "obsidian";
-import {DropboxSyncSettingsI} from "ui/settings";
+import {DropboxSyncPluginI, DropboxSyncSettingsI} from "ui/settings";
 import {CLIENT_ID} from "consts";
 
 interface TAbstractFileI extends TAbstractFile {
@@ -38,13 +38,13 @@ export class DropboxSyncServices {
 	dropboxListener: DropboxListener;
 	vaultListener: VaultListener;
 
-    constructor(public app: App, public settings: DropboxSyncSettingsI) {
+    constructor(public app: App, public plugin: DropboxSyncPluginI) {
         this.app = app;
-        this.settings = settings;
+        this.plugin = plugin;
     }
 
 	getVaultPath(entry: any) {
-		let path = entry.path_display.substring(this.settings.vaultPath.length);
+		let path = entry.path_display.substring(this.plugin.settings.vaultPath.length);
 		if (path.startsWith('/'))
 			path = path.substring(1);
 		return path;
@@ -60,7 +60,7 @@ export class DropboxSyncServices {
 	async copyFileFromDropbox(entry: {path_display: any}, path: string) {
 		let dir = path.split('/').slice(0, -1).join('/');
 		await this.createVaultFolder(dir);
-		let dbx = new Dropbox({auth: await getDropboxAuth(this.settings)});
+		let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
 		let {result} : any = await dbx.filesDownload({path: entry.path_display});
 		if (this.app.vault.getAbstractFileByPath(path))
 		{
@@ -74,8 +74,8 @@ export class DropboxSyncServices {
 	}
 
 	async copyFileToDropbox(path: string) {
-		let dbxPath = `${this.settings.vaultPath}/${path}`;
-		let dbx = new Dropbox({auth: await getDropboxAuth(this.settings)});
+		let dbxPath = `${this.plugin.settings.vaultPath}/${path}`;
+		let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
 		try {
 			let dbxFile = (await dbx.filesGetMetadata({path: dbxPath})).result as {content_hash: string};
             let dbxHash = dbxFile.content_hash;
@@ -96,7 +96,7 @@ export class DropboxSyncServices {
   
     async start() {
         this.dropboxListener = new DropboxListener(
-			await getDropboxAuth(this.settings), this.settings.vaultPath);
+			await getDropboxAuth(this.plugin.settings), this.plugin.settings.vaultPath);
 		this.dropboxListener.start();
 		this.dropboxListener.on('file', async (entry) => {
 			let path = this.getVaultPath(entry);
@@ -119,18 +119,22 @@ export class DropboxSyncServices {
 			if (afile)
 				await this.app.vault.delete(afile);
 		});
-		this.vaultListener = new VaultListener(this.app);
+        this.dropboxListener.on('synced', () => {
+            this.plugin.settings.lastSync = Date.now();
+            this.plugin.saveSettings();
+        });
+        this.vaultListener = new VaultListener(this.app);
 		this.vaultListener.start();
 		this.vaultListener.on('file', async (file) => {
 			await this.copyFileToDropbox(file.path);
 		});
 		this.vaultListener.on('folder', async (folder) => {
-			let dbx = new Dropbox({auth: await getDropboxAuth(this.settings)});
-			await dbx.filesCreateFolderV2({path: `${this.settings.vaultPath}/${folder.path}`});
+			let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
+			await dbx.filesCreateFolderV2({path: `${this.plugin.settings.vaultPath}/${folder.path}`});
 		});
 		this.vaultListener.on('deleted', async (path) => {
-			let dbx = new Dropbox({auth: await getDropboxAuth(this.settings)});
-			await dbx.filesDeleteV2({path: `${this.settings.vaultPath}/${path}`});
+			let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
+			await dbx.filesDeleteV2({path: `${this.plugin.settings.vaultPath}/${path}`});
 		});
     }
 

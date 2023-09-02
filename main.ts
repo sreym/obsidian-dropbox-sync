@@ -21,7 +21,7 @@ export default class DropboxSyncPlugin extends Plugin implements DropboxSyncPlug
 		this.app.vault
 		let dbxAuth = await getDropboxAuth(this.settings);
 		if (this.isSignedIn()) {
-			this.syncServices = new DropboxSyncServices(this.app, this.settings);
+			this.syncServices = new DropboxSyncServices(this.app, this);
 			await this.syncServices.start();
 		}		
 		this.registerObsidianProtocolHandler(OAUTH_CODE, async params => {
