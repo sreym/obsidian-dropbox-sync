@@ -1,5 +1,6 @@
 import {App, Events, TAbstractFile, TFolder} from 'obsidian';
 import {Dropbox, DropboxAuth} from 'dropbox';
+import {traverseListFolder} from 'tools';
 
 export class VaultListener extends Events {
 	app: App;
@@ -46,9 +47,10 @@ export class VaultListener extends Events {
 }
 
 export class DropboxListener extends Events {
-	path: string;
-	lastCursor?: string;
 	dbx: Dropbox;
+	initialCursor: string;
+	lastCursor?: string;
+	path: string;
 	running: boolean;
 
 	constructor(auth: DropboxAuth, path: string) {
@@ -57,40 +59,40 @@ export class DropboxListener extends Events {
 		this.dbx = new Dropbox({auth});
 	}
 
-	start() {
+	async start() {
 		this.running = true;
-		this.syncAndWaitChanges();
+		this.waitChanges();
 	}
 
 	stop() {
 		this.running = false;
 	}
-
-	async* traverseCursor(cursor: string) {
-		let result;
-		do {
-			result = (await this.dbx.filesListFolderContinue({cursor})).result;
-			yield result;
-		} while (result.has_more);
-	}
-
-	async syncAndWaitChanges() {
+	
+	async initialState() {
 		let {result} = await this.dbx.filesListFolder({path: this.path, recursive: true});
 		let {cursor} = result;
+		let initial = [];
+		for (let entry of result.entries)
+			initial.push(entry);
 		let lastCursor = cursor;
 		if (result.has_more) {
-			for await (let result of this.traverseCursor(cursor)) {
+			for await (let result of traverseListFolder(this.dbx, cursor)) {
 				lastCursor = result.cursor;
-				for (let entry of result.entries) {
-					this.trigger(entry['.tag'], entry);
-				}
+				for (let entry of result.entries)
+					initial.push(entry);
 			}
 			cursor = lastCursor;
 		}
+		this.initialCursor = cursor;
+		return initial;
+	}
+
+	async waitChanges() {
+		let cursor = this.initialCursor, lastCursor = cursor;
 		while (this.running) {
 			if (!(await this.dbx.filesListFolderLongpoll({cursor, timeout: 30})).result.changes)
 				continue;
-			for await (let result of this.traverseCursor(cursor)) {
+			for await (let result of traverseListFolder(this.dbx, cursor)) {
 				lastCursor = result.cursor;
 				for (let entry of result.entries) {
 					if (!this.running)

@@ -3,6 +3,7 @@ import {DropboxListener, VaultListener} from "./listeners";
 import {App, TAbstractFile} from "obsidian";
 import {DropboxSyncPluginI, DropboxSyncSettingsI} from "ui/settings";
 import {CLIENT_ID} from "consts";
+import {files} from "dropbox/types/dropbox_types"
 
 interface TAbstractFileI extends TAbstractFile {
     stat: {mtime: number};
@@ -43,8 +44,8 @@ export class DropboxSyncServices {
         this.plugin = plugin;
     }
 
-	getVaultPath(entry: any) {
-		let path = entry.path_display.substring(this.plugin.settings.vaultPath.length);
+	getVaultPath(entry: files.FileMetadataReference|files.FolderMetadataReference|files.DeletedMetadataReference) {
+		let path = (entry.path_display||'').substring(this.plugin.settings.vaultPath.length);
 		if (path.startsWith('/'))
 			path = path.substring(1);
 		return path;
@@ -57,11 +58,11 @@ export class DropboxSyncServices {
 			await this.app.vault.createFolder(path);		
 	}
 
-	async copyFileFromDropbox(entry: {path_display: any}, path: string) {
+	async copyFileFromDropbox(entry: {path_display?: string}, path: string) {
 		let dir = path.split('/').slice(0, -1).join('/');
 		await this.createVaultFolder(dir);
 		let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
-		let {result} : any = await dbx.filesDownload({path: entry.path_display});
+		let {result} : any = await dbx.filesDownload({path: entry.path_display!});
 		if (this.app.vault.getAbstractFileByPath(path))
 		{
 			let dbxHash = result.content_hash;
@@ -93,21 +94,98 @@ export class DropboxSyncServices {
 			mode: {'.tag': 'overwrite'},
 		});
 	}
-  
+
+    async deleteInVault(path: string) {
+        let afile = this.app.vault.getAbstractFileByPath(path);
+        if (afile)
+            await this.app.vault.delete(afile);
+    }
+
+    async sync(dropboxState: Array<files.FileMetadataReference|files.FolderMetadataReference|files.DeletedMetadataReference>) {
+        enum Actions {copyFromDropbox, copyToDropbox, deleteInDropbox, deleteInVault, createDuplicate, skip};
+        let state = new Map<string, {
+            tag: string,
+            path: string,
+            mtime?: number,
+            entry?: files.FileMetadataReference|files.FolderMetadataReference|files.DeletedMetadataReference,
+            action: Actions,
+        }>();
+        dropboxState.forEach(x => {
+            let path = this.getVaultPath(x);
+            if (!path)
+                return;
+            state.set(path, {
+                tag: x['.tag'],
+                path: path,
+                mtime: new Date((x as files.FileMetadataReference).server_modified || 0).getTime(),
+                entry: x,
+                action: Actions.copyFromDropbox,
+            });
+        });
+        let {lastSync = 0} = this.plugin.settings;
+        for (let file of this.app.vault.getFiles()) {
+            let path = file.path;
+            let {mtime} = file.stat;
+            let obj = state.get(path);
+            if (!obj) {
+                // file created after the last sync
+                if (mtime > lastSync)
+                    obj = {tag: 'file', path, action: Actions.copyToDropbox};
+                // file removed after the last sync
+                else
+                    obj = {tag: 'file', path, action: Actions.deleteInVault};
+            } else {
+                let dpMtime = obj.mtime || 0;
+                if (mtime <= lastSync && dpMtime >= lastSync)
+                    obj.action = Actions.copyFromDropbox;
+                else if (mtime >= lastSync && dpMtime <= lastSync)
+                    obj.action = Actions.copyToDropbox;
+                else if (mtime >= lastSync && dpMtime >= lastSync) {
+                    let vaultHash = await contentHash(await this.app.vault.adapter.readBinary(path));
+                    if ((obj.entry! as {content_hash: string}).content_hash === vaultHash)
+                        obj.action = Actions.skip;
+                    else
+                        obj.action = Actions.createDuplicate;
+                } else
+                    obj.action = Actions.skip;
+            }
+            state.set(path, obj);
+        }
+        let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
+        for (let file of state.values()) {
+            switch (file.action) {
+                case Actions.copyFromDropbox:
+                    if (file.tag === 'folder')
+                        await this.createVaultFolder(file.path);
+                    else
+                        await this.copyFileFromDropbox(file.entry!, file.path);
+                    break;
+                case Actions.copyToDropbox:
+                    await this.copyFileToDropbox(file.path);
+                    break;
+                case Actions.deleteInDropbox:
+                    await dbx.filesDeleteV2({path: `${this.plugin.settings.vaultPath}/${file.path}`});
+                    break;
+                case Actions.deleteInVault:
+                    await this.deleteInVault(file.path);
+                    break;
+                case Actions.createDuplicate:
+                    let afile = this.app.vault.getAbstractFileByPath(file.path);
+                    let newPath = `${file.path}.conflict`;
+                    await this.app.vault.rename(afile!, newPath);
+                    await this.copyFileToDropbox(newPath);
+                    await this.copyFileFromDropbox(file.entry!, file.path);
+                    break;
+            }
+        }
+    }
+
     async start() {
-        this.dropboxListener = new DropboxListener(
-			await getDropboxAuth(this.plugin.settings), this.plugin.settings.vaultPath);
-		this.dropboxListener.start();
+        let auth = await getDropboxAuth(this.plugin.settings);
+        this.dropboxListener = new DropboxListener(auth, this.plugin.settings.vaultPath);
 		this.dropboxListener.on('file', async (entry) => {
 			let path = this.getVaultPath(entry);
-			let afile = this.app.vault.getAbstractFileByPath(path) as TAbstractFileI | null;
-			if (afile) {
-				let afilem = afile.stat.mtime;
-				let dfilem = new Date(entry.server_modified).getTime();
-				if (dfilem > afilem)
-					this.copyFileFromDropbox(entry, path);
-			} else
-				this.copyFileFromDropbox(entry, path);
+			await this.copyFileFromDropbox(entry, path);
 		});
 		this.dropboxListener.on('folder', async (entry) => {
 			let path = this.getVaultPath(entry);
@@ -115,16 +193,15 @@ export class DropboxSyncServices {
 		});
 		this.dropboxListener.on('deleted', async (entry) => {
 			let path = this.getVaultPath(entry);
-			let afile = this.app.vault.getAbstractFileByPath(path);
-			if (afile)
-				await this.app.vault.delete(afile);
+            await this.deleteInVault(path);
 		});
         this.dropboxListener.on('synced', () => {
             this.plugin.settings.lastSync = Date.now();
             this.plugin.saveSettings();
         });
+        await this.sync(await this.dropboxListener.initialState());
+		this.dropboxListener.start();
         this.vaultListener = new VaultListener(this.app);
-		this.vaultListener.start();
 		this.vaultListener.on('file', async (file) => {
 			await this.copyFileToDropbox(file.path);
 		});
@@ -136,6 +213,7 @@ export class DropboxSyncServices {
 			let dbx = new Dropbox({auth: await getDropboxAuth(this.plugin.settings)});
 			await dbx.filesDeleteV2({path: `${this.plugin.settings.vaultPath}/${path}`});
 		});
+		this.vaultListener.start();
     }
 
     stop() {
