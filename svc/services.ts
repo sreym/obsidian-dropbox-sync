@@ -101,6 +101,24 @@ export class DropboxSyncServices {
             await this.app.vault.delete(afile);
     }
 
+    findConflictName(path: string) {
+        let m = /(.*)(\.[^.\/]*)$/.exec(path);
+        let ext = '', basename;
+        if (!m)
+            basename = path;
+        else
+            basename = m[1], ext = m[2];
+        if (/\.conflict\d*/.test(ext))
+            ext = '';
+        else
+            basename = basename.replace(/\.conflict\d*$/, '');
+        for (let i = 0; ; i += 1) {
+            let newPath = `${basename}.conflict${i||''}${ext}`;
+            if (!this.app.vault.getAbstractFileByPath(newPath))
+                return newPath;
+        }
+    }
+
     async sync(dropboxState: Array<files.FileMetadataReference|files.FolderMetadataReference|files.DeletedMetadataReference>) {
         enum Actions {copyFromDropbox, copyToDropbox, deleteInDropbox, deleteInVault, createDuplicate, skip};
         let state = new Map<string, {
@@ -171,7 +189,7 @@ export class DropboxSyncServices {
                     break;
                 case Actions.createDuplicate:
                     let afile = this.app.vault.getAbstractFileByPath(file.path);
-                    let newPath = `${file.path}.conflict`;
+                    let newPath = this.findConflictName(file.path);
                     await this.app.vault.rename(afile!, newPath);
                     await this.copyFileToDropbox(newPath);
                     await this.copyFileFromDropbox(file.entry!, file.path);
