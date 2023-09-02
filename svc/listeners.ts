@@ -22,7 +22,10 @@ export class VaultListener extends Events {
 	}
 
 	onModify(file: TAbstractFile) {
-		this.trigger('folder', file);
+		if (file instanceof TFolder)
+			this.trigger('folder', file);
+		else
+			this.trigger('file', file);
 	}
 
 	onCreate(file: TAbstractFile) {

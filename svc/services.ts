@@ -1,8 +1,12 @@
 import {Dropbox, DropboxAuth} from "dropbox";
 import {DropboxListener, VaultListener} from "./listeners";
-import {App} from "obsidian";
+import {App, TAbstractFile} from "obsidian";
 import {DropboxSyncSettingsI} from "ui/settings";
 import {CLIENT_ID} from "consts";
+
+interface TAbstractFileI extends TAbstractFile {
+    stat: {mtime: number};
+}
 
 const BLOCK_SIZE = 4 * 1024 * 1024;
 async function contentHash(data: ArrayBuffer) {
@@ -73,15 +77,15 @@ export class DropboxSyncServices {
 		let dbxPath = `${this.settings.vaultPath}/${path}`;
 		let dbx = new Dropbox({auth: await getDropboxAuth(this.settings)});
 		try {
-			let dbxHash = (await dbx.filesGetMetadata({path: dbxPath})).result.content_hash;
+			let dbxFile = (await dbx.filesGetMetadata({path: dbxPath})).result as {content_hash: string};
+            let dbxHash = dbxFile.content_hash;
 			let vaultHash = await contentHash(await this.app.vault.adapter.readBinary(path));
+            console.log(path, vaultHash, dbxHash);
 			if (dbxHash === vaultHash)
 				return;
-			console.log(vaultHash, dbxHash);
 		} catch(e) {
-			if (!e.error.error.path['.tag'])
+			if (e.error.error.path['.tag']!='not_found')
 				throw e;
-			console.log('file does not exist on dropbox');
 		}
 		await dbx.filesUpload({
 			path: dbxPath,
@@ -96,20 +100,14 @@ export class DropboxSyncServices {
 		this.dropboxListener.start();
 		this.dropboxListener.on('file', async (entry) => {
 			let path = this.getVaultPath(entry);
-			let afile = this.app.vault.getAbstractFileByPath(path) as {stat: {mtime: number}} | null;
+			let afile = this.app.vault.getAbstractFileByPath(path) as TAbstractFileI | null;
 			if (afile) {
 				let afilem = afile.stat.mtime;
 				let dfilem = new Date(entry.server_modified).getTime();
-				if (dfilem > afilem) {
-					console.log('upload file from dropbox');
+				if (dfilem > afilem)
 					this.copyFileFromDropbox(entry, path);
-				} else {
-					console.log('file on dropbox is outdated');
-				}
-			} else {
-				console.log('upload new file from dropbox');
+			} else
 				this.copyFileFromDropbox(entry, path);
-			}
 		});
 		this.dropboxListener.on('folder', async (entry) => {
 			let path = this.getVaultPath(entry);
